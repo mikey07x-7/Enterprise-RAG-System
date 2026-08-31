@@ -1,0 +1,3 @@
+from backend.database.database import check_database_connection
+
+check_database_connection()

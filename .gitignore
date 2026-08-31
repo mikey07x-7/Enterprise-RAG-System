@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables / secrets
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Python tools
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Local vector database / indexes
+chroma/
+chroma_db/
+vector_db/
+faiss_index/
+
+# Uploaded/private enterprise documents
+uploads/
+documents/
+data/private/
+
+# Build/cache
+dist/
+build/
+*.egg-info/
