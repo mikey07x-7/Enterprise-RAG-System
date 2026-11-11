@@ -12,11 +12,12 @@ from sqlalchemy.orm import Session
 from core.logger import logger
 from models.document import Document
 from models.chunk import Chunk
-from services.chunking_service import chunk_text
+from services.chunking_service import chunking_service
 from services.indexing_service import indexing_service
 from services.upload_service import (
     validate_file_type,
-    extract_text,
+    extract_document_pages,
+    extract_text,  # Backward-compatible import used by existing tests/scripts.
     DocumentProcessingError,
 )
 
@@ -70,7 +71,8 @@ def process_and_store_document(
             f"Extracting text from: {path.name}"
         )
 
-        text = extract_text(path)
+        pages = extract_document_pages(path)
+        text = "\n\n".join(page["text"] for page in pages)
 
         if not text.strip():
             raise DocumentProcessingError(
@@ -86,7 +88,7 @@ def process_and_store_document(
             filename=filename or path.name,
             file_type=path.suffix.lower().lstrip("."),
             file_path=str(path),
-            title=path.stem,
+            title=Path(filename or path.name).stem,
             status="processing",
         )
 
@@ -105,10 +107,10 @@ def process_and_store_document(
             f"Chunking document {document.id}"
         )
 
-        chunks = chunk_text(
-            text,
-            chunk_size=1000,
-            chunk_overlap=200,
+        chunks = chunking_service.chunk_pages(
+            pages,
+            chunk_size=1200,
+            chunk_overlap=180,
         )
 
         if not chunks:
@@ -120,11 +122,13 @@ def process_and_store_document(
         # 4. Store chunks
         # ==================================================
 
-        for index, content in enumerate(chunks):
+        for index, chunk_data in enumerate(chunks):
             chunk = Chunk(
                 document_id=document.id,
                 chunk_index=index,
-                content=content,
+                page_number=chunk_data.get("page_number"),
+                section_title=chunk_data.get("section_title"),
+                content=chunk_data["content"],
             )
 
             db.add(chunk)
@@ -174,6 +178,11 @@ def process_and_store_document(
     except Exception as exc:
 
         db.rollback()
+        # Remove any FAISS rows that may have been written before the DB rollback.
+        try:
+            indexing_service.rebuild_index(db)
+        except Exception:
+            logger.exception("FAISS reconciliation after document rollback failed.")
 
         logger.exception(
             f"Document processing failed: {exc}"

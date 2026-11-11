@@ -198,6 +198,33 @@ class VectorStoreService:
             f"to FAISS."
         )
 
+    def replace_embeddings(
+        self,
+        embeddings: list[list[float]],
+        chunk_ids: list[int],
+    ) -> None:
+        """Atomically replace the in-memory index and mapping with supplied rows."""
+        if len(embeddings) != len(chunk_ids):
+            raise ValueError("Number of embeddings must match number of chunk IDs.")
+
+        new_index = faiss.IndexFlatIP(self.dimension)
+        new_mapping = {}
+
+        if embeddings:
+            vectors = np.asarray(embeddings, dtype=np.float32)
+            if vectors.ndim != 2 or vectors.shape[1] != self.dimension:
+                raise ValueError(f"Expected vectors with dimension {self.dimension}.")
+            new_index.add(vectors)
+            new_mapping = {str(i): int(chunk_id) for i, chunk_id in enumerate(chunk_ids)}
+
+        old_index, old_mapping = self.index, self.chunk_mapping
+        self.index, self.chunk_mapping = new_index, new_mapping
+        try:
+            self.save()
+        except Exception:
+            self.index, self.chunk_mapping = old_index, old_mapping
+            raise
+
     # ======================================================
     # Search
     # ======================================================

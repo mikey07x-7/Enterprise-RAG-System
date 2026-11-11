@@ -45,7 +45,7 @@ class ChatService:
         self,
         db: Session,
         query: str,
-        top_k: int = 5,
+        top_k: int = 10,
     ) -> dict:
 
         if not query or not query.strip():

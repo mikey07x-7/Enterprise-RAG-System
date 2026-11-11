@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # --------------------------------------------------
     # LLM
     # --------------------------------------------------
-    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    GROQ_MODEL: str = "openai/gpt-oss-20b"
 
     VECTOR_DB: str = "faiss"
     EMBEDDING_MODEL: str = "BAAI/bge-base-en-v1.5"

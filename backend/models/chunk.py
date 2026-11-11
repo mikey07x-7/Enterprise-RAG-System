@@ -25,6 +25,17 @@ class Chunk(Base):
         nullable=False,
     )
 
+    page_number: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True,
+    )
+
+    section_title: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     content: Mapped[str] = mapped_column(
         Text,
         nullable=False,

@@ -1,262 +1,68 @@
-"""
-Document Upload / Processing Utilities
-
-Handles:
-- File type validation
-- PDF text extraction
-- DOCX text extraction
-- TXT / Markdown text extraction
-- Text cleaning
-"""
-
+"""Document extraction helpers that preserve PDF page boundaries and line breaks."""
 from pathlib import Path
-
 from docx import Document as DocxDocument
 from pypdf import PdfReader
 
-
-# ==========================================================
-# Supported File Types
-# ==========================================================
-
-SUPPORTED_EXTENSIONS = {
-    ".pdf",
-    ".docx",
-    ".txt",
-    ".md",
-}
-
-
-# ==========================================================
-# Processing Exception
-# ==========================================================
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
 
 class DocumentProcessingError(Exception):
-    """Raised when document processing fails."""
+    pass
 
+def validate_file_type(file_path: str | Path) -> bool:
+    return Path(file_path).suffix.lower() in SUPPORTED_EXTENSIONS
 
-# ==========================================================
-# File Validation
-# ==========================================================
-
-def validate_file_type(
-    file_path: str | Path,
-) -> bool:
-    """
-    Check whether the file has a supported extension.
-    """
-
-    extension = Path(file_path).suffix.lower()
-
-    return extension in SUPPORTED_EXTENSIONS
-
-
-# ==========================================================
-# PDF Extraction
-# ==========================================================
-
-def extract_text_from_pdf(
-    file_path: str | Path,
-) -> str:
-    """
-    Extract text from a PDF file.
-    """
-
-    try:
-        reader = PdfReader(str(file_path))
-
-        pages = []
-
-        for page in reader.pages:
-
-            text = page.extract_text()
-
-            if text:
-                pages.append(text)
-
-        return "\n\n".join(pages)
-
-    except Exception as exc:
-
-        raise DocumentProcessingError(
-            f"Failed to extract text from PDF: {exc}"
-        ) from exc
-
-
-# ==========================================================
-# DOCX Extraction
-# ==========================================================
-
-def extract_text_from_docx(
-    file_path: str | Path,
-) -> str:
-    """
-    Extract text from a DOCX file.
-    """
-
-    try:
-        document = DocxDocument(
-            str(file_path)
-        )
-
-        paragraphs = [
-            paragraph.text
-            for paragraph in document.paragraphs
-            if paragraph.text.strip()
-        ]
-
-        return "\n\n".join(paragraphs)
-
-    except Exception as exc:
-
-        raise DocumentProcessingError(
-            f"Failed to extract text from DOCX: {exc}"
-        ) from exc
-
-
-# ==========================================================
-# TXT / Markdown Extraction
-# ==========================================================
-
-def extract_text_from_txt(
-    file_path: str | Path,
-) -> str:
-    """
-    Extract text from TXT or Markdown files.
-    """
-
-    try:
-
-        return Path(file_path).read_text(
-            encoding="utf-8",
-            errors="replace",
-        )
-
-    except Exception as exc:
-
-        raise DocumentProcessingError(
-            f"Failed to read text file: {exc}"
-        ) from exc
-
-
-# ==========================================================
-# Text Cleaning
-# ==========================================================
-
-def clean_text(
-    text: str,
-) -> str:
-    """
-    Clean extracted document text.
-    """
-
+def clean_text(text: str) -> str:
+    """Normalize whitespace while preserving blank lines and line boundaries."""
     if not text:
         return ""
-
-    # Normalize line endings
-    text = text.replace(
-        "\r\n",
-        "\n",
-    )
-
-    text = text.replace(
-        "\r",
-        "\n",
-    )
-
-    lines = []
-
-    for line in text.split("\n"):
-
-        line = " ".join(
-            line.split()
-        )
-
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    # Keep one blank line between paragraphs; don't collapse the page to one line.
+    out = []
+    blank = False
+    for line in lines:
         if line:
-            lines.append(line)
+            out.append(line)
+            blank = False
+        elif out and not blank:
+            out.append("")
+            blank = True
+    return "\n".join(out).strip()
 
-    return "\n".join(lines).strip()
-
-
-# ==========================================================
-# Main Extraction Function
-# ==========================================================
-
-def extract_text(
-    file_path: str | Path,
-) -> str:
-    """
-    Extract and clean text from a supported document.
-    """
-
+def extract_document_pages(file_path: str | Path) -> list[dict]:
     path = Path(file_path)
-
     if not path.exists():
+        raise DocumentProcessingError(f"File does not exist: {path}")
+    ext = path.suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise DocumentProcessingError(f"Unsupported file type: {ext}")
+    try:
+        if ext == ".pdf":
+            reader = PdfReader(str(path))
+            units = [{"page_number": i, "text": clean_text(page.extract_text() or "")}
+                     for i, page in enumerate(reader.pages, start=1)]
+        elif ext == ".docx":
+            doc = DocxDocument(str(path))
+            text = clean_text("\n\n".join(p.text for p in doc.paragraphs))
+            units = [{"page_number": None, "text": text}]
+        else:
+            text = clean_text(path.read_text(encoding="utf-8", errors="replace"))
+            units = [{"page_number": None, "text": text}]
+    except Exception as exc:
+        raise DocumentProcessingError(f"Failed to extract text from {path.name}: {exc}") from exc
+    units = [u for u in units if u["text"]]
+    if not units:
+        raise DocumentProcessingError(f"No readable text extracted from {path.name}")
+    return units
 
-        raise DocumentProcessingError(
-            f"File does not exist: {path}"
-        )
+def extract_text_from_pdf(file_path: str | Path) -> str:
+    return "\n\n".join(unit["text"] for unit in extract_document_pages(file_path))
 
-    extension = path.suffix.lower()
+def extract_text_from_docx(file_path: str | Path) -> str:
+    return extract_document_pages(file_path)[0]["text"]
 
-    if extension not in SUPPORTED_EXTENSIONS:
+def extract_text_from_txt(file_path: str | Path) -> str:
+    return extract_document_pages(file_path)[0]["text"]
 
-        raise DocumentProcessingError(
-            f"Unsupported file type: {extension}"
-        )
-
-    # ------------------------------------------------------
-    # PDF
-    # ------------------------------------------------------
-
-    if extension == ".pdf":
-
-        text = extract_text_from_pdf(
-            path
-        )
-
-    # ------------------------------------------------------
-    # DOCX
-    # ------------------------------------------------------
-
-    elif extension == ".docx":
-
-        text = extract_text_from_docx(
-            path
-        )
-
-    # ------------------------------------------------------
-    # TXT / MD
-    # ------------------------------------------------------
-
-    elif extension in {
-        ".txt",
-        ".md",
-    }:
-
-        text = extract_text_from_txt(
-            path
-        )
-
-    else:
-
-        raise DocumentProcessingError(
-            f"Unsupported file type: {extension}"
-        )
-
-    # ------------------------------------------------------
-    # Clean
-    # ------------------------------------------------------
-
-    cleaned_text = clean_text(
-        text
-    )
-
-    if not cleaned_text:
-
-        raise DocumentProcessingError(
-            "No readable text was extracted "
-            "from the document."
-        )
-
-    return cleaned_text
+def extract_text(file_path: str | Path) -> str:
+    return "\n\n".join(unit["text"] for unit in extract_document_pages(file_path))

@@ -1,3 +1,4 @@
+
 """
 Document API
 
@@ -6,6 +7,7 @@ viewing, and deleting documents.
 """
 
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import (
     APIRouter,
@@ -18,15 +20,12 @@ from fastapi import (
 from sqlalchemy.orm import Session
 
 from core.security import get_current_user
-from core.config import settings
 from database.database import get_db
 from models.document import Document
 from models.user import User
 from schemas.upload import DocumentResponse
-from services.document_service import (
-    process_and_store_document,
-)
-
+from services.document_service import process_and_store_document
+from services.indexing_service import indexing_service
 
 
 router = APIRouter(
@@ -50,25 +49,10 @@ def upload_document(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Upload and completely process a document.
+    Upload and process a document.
 
-    Pipeline:
-
-        Upload
-          ↓
-        Save
-          ↓
-        Extract
-          ↓
-        Chunk
-          ↓
-        PostgreSQL
-          ↓
-        Embeddings
-          ↓
-        FAISS
-          ↓
-        Ready
+    Each physical file receives a unique UUID filename,
+    while the original filename is preserved in PostgreSQL.
     """
 
     if not file.filename:
@@ -97,37 +81,32 @@ def upload_document(
         )
 
     # ------------------------------------------------------
-    # Storage
+    # Create user-specific storage directory
     # ------------------------------------------------------
 
     upload_directory = Path("storage/uploads")
 
-    upload_directory.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    user_directory = (
-        upload_directory / str(current_user.id)
-    )
+    user_directory = upload_directory / str(current_user.id)
 
     user_directory.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    file_path = user_directory / original_filename
+    # ------------------------------------------------------
+    # Generate unique physical filename
+    # ------------------------------------------------------
+
+    unique_filename = f"{uuid4().hex}{extension}"
+    file_path = user_directory / unique_filename
 
     # ------------------------------------------------------
-    # Save file
+    # Save uploaded file
     # ------------------------------------------------------
 
     try:
-
-        with file_path.open("wb") as buffer:
-
+        with file_path.open("xb") as buffer:
             while True:
-
                 chunk = file.file.read(1024 * 1024)
 
                 if not chunk:
@@ -136,7 +115,6 @@ def upload_document(
                 buffer.write(chunk)
 
     except Exception as exc:
-
         if file_path.exists():
             file_path.unlink()
 
@@ -149,11 +127,10 @@ def upload_document(
         file.file.close()
 
     # ------------------------------------------------------
-    # Process + Index
+    # Process document and generate embeddings
     # ------------------------------------------------------
 
     try:
-
         document = process_and_store_document(
             db=db,
             file_path=file_path,
@@ -162,7 +139,6 @@ def upload_document(
         )
 
     except Exception as exc:
-
         if file_path.exists():
             file_path.unlink()
 
@@ -171,11 +147,9 @@ def upload_document(
             detail=f"Document processing failed: {exc}",
         ) from exc
 
-    # ------------------------------------------------------
-    # Return
-    # ------------------------------------------------------
-
     return document
+
+
 # ==========================================================
 # List Documents
 # ==========================================================
@@ -188,9 +162,7 @@ def list_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Return documents belonging to the authenticated user.
-    """
+    """Return documents belonging to the authenticated user."""
 
     documents = (
         db.query(Document)
@@ -219,9 +191,7 @@ def get_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Return a document belonging to the authenticated user.
-    """
+    """Return a document belonging to the authenticated user."""
 
     document = (
         db.query(Document)
@@ -255,7 +225,8 @@ def delete_document(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Delete a document belonging to the authenticated user.
+    Delete a document belonging to the authenticated user
+    and rebuild the FAISS index.
     """
 
     document = (
@@ -275,10 +246,32 @@ def delete_document(
 
     file_path = Path(document.file_path)
 
-    db.delete(document)
-    db.commit()
+    try:
+        db.delete(document)
+        db.flush()
 
-    if file_path.exists():
-        file_path.unlink()
+        # Correct method defined in indexing_service.py.
+        # Rebuild the index without the deleted document's chunks.
+        indexing_service.rebuild_index(db)
+
+        db.commit()
+
+    except Exception as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete document and rebuild the vector index.",
+        ) from exc
+
+    # Remove the physical file after successful database deletion.
+    try:
+        if file_path.exists():
+            file_path.unlink()
+
+    except OSError:
+        # Database deletion succeeded; an orphaned physical file
+        # can be cleaned up separately.
+        pass
 
     return None
